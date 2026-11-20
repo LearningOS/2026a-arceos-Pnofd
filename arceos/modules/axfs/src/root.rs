@@ -302,9 +302,40 @@ pub(crate) fn set_current_dir(path: &str) -> AxResult {
 }
 
 pub(crate) fn rename(old: &str, new: &str) -> AxResult {
-    if parent_node_of(None, new).lookup(new).is_ok() {
-        warn!("dst file already exist, now remove it");
-        remove_file(None, new)?;
+    let old_path = absolute_path(old)?;
+    let new_path = absolute_path(new)?;
+
+    if old_path == new_path {
+        return Ok(());
     }
-    parent_node_of(None, old).rename(old, new)
+
+    // This exercise only asks for rename within the same directory.
+    let old_parent = old_path.rsplit_once('/').map(|(p, _)| p).unwrap_or("");
+    let new_parent = new_path.rsplit_once('/').map(|(p, _)| p).unwrap_or("");
+    if old_parent != new_parent {
+        return ax_err!(InvalidInput, "rename across directories is not supported");
+    }
+
+    if lookup(None, &new_path).is_ok() {
+        warn!("dst file already exist, now remove it");
+        remove_file(None, &new_path)?;
+    }
+
+    let src = lookup(None, &old_path)?;
+    let attr = src.get_attr()?;
+    if !attr.is_file() {
+        return ax_err!(Unsupported, "only regular file rename is supported");
+    }
+
+    // The underlying RAM filesystem does not implement `VfsNodeOps::rename`,
+    // so implement an equivalent operation with the generic VFS primitives:
+    // create the destination, copy the data, then remove the source.
+    let mut data = alloc::vec![0u8; attr.size() as usize];
+    let n = src.read_at(0, &mut data)?;
+    data.truncate(n);
+
+    let dst = create_file(None, &new_path)?;
+    dst.write_at(0, &data)?;
+    remove_file(None, &old_path)?;
+    Ok(())
 }

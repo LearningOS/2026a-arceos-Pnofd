@@ -14,10 +14,16 @@ macro_rules! print {
 }
 
 /// Prints to the standard output, with a newline.
+///
+/// The output is wrapped with ANSI color escape sequences so that the
+/// exercise `print_with_color` can verify that colored output works.
 #[macro_export]
 macro_rules! println {
     () => { $crate::print!("\n") };
     ($($arg:tt)*) => {
-        $crate::io::__print_impl(format_args!("{}\n", format_args!($($arg)*)));
+        $crate::io::__print_impl(format_args!(
+            "\u{1B}[32m{}\u{1B}[0m\n",
+            format_args!($($arg)*)
+        ));
     }
 }

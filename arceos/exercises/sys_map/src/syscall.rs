@@ -7,6 +7,8 @@ use axerrno::LinuxError;
 use axtask::current;
 use axtask::TaskExtRef;
 use axhal::paging::MappingFlags;
+use axhal::mem::{VirtAddr, PAGE_SIZE_4K};
+use memory_addr::VirtAddrRange;
 use arceos_posix_api as api;
 
 const SYS_IOCTL: usize = 29;
@@ -138,9 +140,66 @@ fn sys_mmap(
     prot: i32,
     flags: i32,
     fd: i32,
-    _offset: isize,
+    offset: isize,
 ) -> isize {
-    unimplemented!("no sys_mmap!");
+    let result = (|| -> Result<isize, LinuxError> {
+        if length == 0 {
+            return Err(LinuxError::EINVAL);
+        }
+
+        let prot = MmapProt::from_bits_truncate(prot);
+        let flags = MmapFlags::from_bits_truncate(flags);
+        let map_flags: MappingFlags = prot.into();
+        let size = (length + PAGE_SIZE_4K - 1) & !(PAGE_SIZE_4K - 1);
+
+        let curr = current();
+        let aspace = curr.task_ext().aspace.clone();
+        let mut aspace = aspace.lock();
+
+        let hint = if addr.is_null() {
+            VirtAddr::from_usize(0x1000)
+        } else {
+            VirtAddr::from_usize(addr as usize)
+        };
+        let start = if flags.contains(MmapFlags::MAP_FIXED) {
+            VirtAddr::from_usize(addr as usize)
+        } else {
+            aspace
+                .find_free_area(
+                    hint,
+                    size,
+                    VirtAddrRange::from_start_size(aspace.base(), aspace.size()),
+                )
+                .ok_or(LinuxError::ENOMEM)?
+        };
+
+        aspace
+            .map_alloc(start, size, map_flags, true)
+            .map_err(|_| LinuxError::ENOMEM)?;
+
+        // File-backed mapping: read the file contents through the POSIX
+        // file descriptor and copy them into the freshly mapped pages.
+        if !flags.contains(MmapFlags::MAP_ANONYMOUS) && fd >= 0 {
+            if offset != 0 {
+                api::sys_lseek(fd, offset as _, 0);
+            }
+            let mut data = alloc::vec![0u8; size];
+            let n = api::sys_read(fd, data.as_mut_ptr() as *mut c_void, size);
+            if n < 0 {
+                return Err(LinuxError::EIO);
+            }
+            aspace
+                .write(start, &data[..n as usize])
+                .map_err(|_| LinuxError::EFAULT)?;
+        }
+
+        Ok(start.as_usize() as isize)
+    })();
+
+    match result {
+        Ok(v) => v,
+        Err(e) => -(e.code() as isize),
+    }
 }
 
 fn sys_openat(dfd: c_int, fname: *const c_char, flags: c_int, mode: api::ctypes::mode_t) -> isize {

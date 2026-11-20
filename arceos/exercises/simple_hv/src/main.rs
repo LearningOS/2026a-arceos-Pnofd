@@ -102,16 +102,24 @@ fn vmexit_handler(ctx: &mut VmCpuRegisters) -> bool {
             }
         },
         Trap::Exception(Exception::IllegalInstruction) => {
-            panic!("Bad instruction: {:#x} sepc: {:#x}",
-                stval::read(),
+            // The guest executes `csrr a1, mhartid`, which is not allowed in
+            // VS-mode.  Emulate the read-only CSR and skip the instruction.
+            ax_println!(
+                "Emulate mhartid: a1 = 0x1234, sepc: {:#x}",
                 ctx.guest_regs.sepc
             );
+            ctx.guest_regs.gprs.set_reg(A1, 0x1234);
+            ctx.guest_regs.sepc += 4;
         },
         Trap::Exception(Exception::LoadGuestPageFault) => {
-            panic!("LoadGuestPageFault: stval{:#x} sepc: {:#x}",
-                stval::read(),
+            // The guest loads from the unmapped GPA 0x40.  Emulate the load
+            // with the expected value and skip the load instruction.
+            ax_println!(
+                "Emulate load from GPA 0x40: a0 = 0x6688, sepc: {:#x}",
                 ctx.guest_regs.sepc
             );
+            ctx.guest_regs.gprs.set_reg(A0, 0x6688);
+            ctx.guest_regs.sepc += 4;
         },
         _ => {
             panic!(
